@@ -1,0 +1,5 @@
+{
+  "name": "LetterBox",
+  "description": "A focused, offline-first newsletter reading experience similar to the described mobile app, featuring AI summarization.",
+  "requestFramePermissions": []
+}
