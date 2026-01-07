@@ -1,15 +1,23 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { EmailItem } from '../types';
-import { MailOpen } from 'lucide-react';
+import { MailOpen, Sparkles, Calendar } from 'lucide-react';
 
 interface EmailListProps {
   emails: EmailItem[];
   onSelectEmail: (id: string) => void;
   filterUnread: boolean;
   onToggleFilter: () => void;
+  onSummarizeDay: (date: string) => void;
 }
 
-export const EmailList: React.FC<EmailListProps> = ({ emails, onSelectEmail, filterUnread, onToggleFilter }) => {
+export const EmailList: React.FC<EmailListProps> = ({ 
+  emails, 
+  onSelectEmail, 
+  filterUnread, 
+  onToggleFilter,
+  onSummarizeDay
+}) => {
+  const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
   
   const filteredEmails = filterUnread ? emails.filter(e => !e.isRead) : emails;
 
@@ -31,18 +39,40 @@ export const EmailList: React.FC<EmailListProps> = ({ emails, onSelectEmail, fil
   return (
     <div className="flex flex-col h-full bg-white dark:bg-gray-900 transition-colors duration-200">
       {/* Search / Header */}
-      <div className="p-4 border-b border-gray-100 dark:border-gray-800 flex items-center justify-between sticky top-0 bg-white/95 dark:bg-gray-900/95 backdrop-blur z-10">
-        <h1 className="text-xl font-bold text-gray-800 dark:text-white">Inbox</h1>
-        <button 
-          onClick={onToggleFilter}
-          className={`px-3 py-1.5 rounded-full text-xs font-medium transition-colors ${
-            filterUnread 
-            ? 'bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300' 
-            : 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700'
-          }`}
-        >
-          {filterUnread ? 'Unread Only' : 'All Emails'}
-        </button>
+      <div className="p-4 border-b border-gray-100 dark:border-gray-800 bg-white/95 dark:bg-gray-900/95 backdrop-blur z-10">
+        <div className="flex items-center justify-between mb-4">
+          <h1 className="text-xl font-bold text-gray-800 dark:text-white">Inbox</h1>
+          <button 
+            onClick={onToggleFilter}
+            className={`px-3 py-1.5 rounded-full text-xs font-medium transition-colors ${
+              filterUnread 
+              ? 'bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300' 
+              : 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700'
+            }`}
+          >
+            {filterUnread ? 'Unread Only' : 'All Emails'}
+          </button>
+        </div>
+
+        {/* AI Daily Summary Bar */}
+        <div className="flex items-center gap-2 bg-blue-50/50 dark:bg-blue-900/10 p-2 rounded-2xl border border-blue-50 dark:border-blue-800/50">
+          <div className="relative flex-1">
+            <Calendar className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-blue-500" />
+            <input 
+              type="date" 
+              value={selectedDate}
+              onChange={(e) => setSelectedDate(e.target.value)}
+              className="w-full pl-9 pr-3 py-2 bg-white dark:bg-gray-800 border-none rounded-xl text-sm font-medium text-gray-700 dark:text-gray-200 focus:ring-2 focus:ring-blue-500 transition-all appearance-none"
+            />
+          </div>
+          <button 
+            onClick={() => onSummarizeDay(selectedDate)}
+            className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-xl text-sm font-bold hover:bg-blue-700 active:scale-95 transition-all shadow-md shadow-blue-200 dark:shadow-none"
+          >
+            <Sparkles size={16} className="fill-current" />
+            <span>Resumir Dia</span>
+          </button>
+        </div>
       </div>
 
       {/* List */}

@@ -1,14 +1,21 @@
 import React, { useState, useEffect } from 'react';
-import { AppState, EmailItem, Sender, ViewState, User, Theme } from './types';
-import { loadEmails, loadSenders, loadUser, saveEmails, saveSenders, saveUser } from './services/storageService';
-import { initGoogleClient, loginToGoogle, fetchGmailMessages } from './services/googleService';
-import { COLORS } from './constants';
+import { EmailItem, Sender, ViewState, User, Theme } from './types';
+import { 
+  loadEmailsLocal, saveEmailsLocal, 
+  loadSendersLocal, saveSendersLocal, 
+  loadUserLocal, saveUserLocal,
+  loadSendersFromCloud, syncSendersToCloud, removeSenderFromCloud
+} from './services/storageService';
+import { auth, googleProvider, signInWithPopup, onAuthStateChanged, signOut, GoogleAuthProvider } from './services/firebase';
+import { initGoogleClient, fetchGmailMessages } from './services/googleService';
+import { summarizeDailyDigest } from './services/geminiService';
+import { COLORS, INITIAL_SENDERS } from './constants';
 import { EmailList } from './components/EmailList';
 import { SenderManager } from './components/SenderManager';
 import { EmailReader } from './components/EmailReader';
 import { Profile } from './components/Profile';
 import { Welcome } from './components/Welcome';
-import { Settings, RefreshCw, User as UserIcon } from 'lucide-react';
+import { Settings, RefreshCw, User as UserIcon, X, Sparkles, Loader2 } from 'lucide-react';
 
 const App: React.FC = () => {
   const [emails, setEmails] = useState<EmailItem[]>([]);
@@ -21,111 +28,124 @@ const App: React.FC = () => {
   const [isSyncing, setIsSyncing] = useState(false);
   const [isGoogleReady, setIsGoogleReady] = useState(false);
 
-  // Load initial data
-  useEffect(() => {
-    const storedUser = loadUser();
-    setUser(storedUser);
-    setEmails(loadEmails());
-    setSenders(loadSenders());
+  // Daily Digest State
+  const [dailyDigest, setDailyDigest] = useState<{ date: string, text: string } | null>(null);
+  const [isSummarizingDay, setIsSummarizingDay] = useState(false);
 
-    // Initialize Google API Client
-    initGoogleClient(() => {
-      console.log("Google API Client Initialized");
-      setIsGoogleReady(true);
-    });
+  // 1. Initialize data from LocalStorage
+  useEffect(() => {
+    setUser(loadUserLocal());
+    setEmails(loadEmailsLocal());
+    setSenders(loadSendersLocal());
+    initGoogleClient(() => setIsGoogleReady(true));
   }, []);
 
-  // Theme Management
+  // 2. Firebase Auth Listener
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+      if (firebaseUser) {
+        const userData: User = {
+          email: firebaseUser.email || '',
+          name: firebaseUser.displayName || firebaseUser.email?.split('@')[0] || 'User',
+          avatarUrl: firebaseUser.photoURL || undefined,
+          theme: loadUserLocal()?.theme || 'system'
+        };
+        setUser(userData);
+        saveUserLocal(userData);
+
+        const cloudSenders = await loadSendersFromCloud(firebaseUser.uid);
+        setSenders(cloudSenders);
+        saveSendersLocal(cloudSenders);
+      } else {
+        setUser(null);
+        saveUserLocal(null);
+      }
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // 3. Theme Management
   useEffect(() => {
     const applyTheme = (theme: Theme) => {
       const isDark = theme === 'dark' || (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
-      if (isDark) {
-        document.documentElement.classList.add('dark');
-        document.querySelector('meta[name="theme-color"]')?.setAttribute('content', '#111827');
-      } else {
-        document.documentElement.classList.remove('dark');
-        document.querySelector('meta[name="theme-color"]')?.setAttribute('content', '#ffffff');
-      }
+      document.documentElement.classList.toggle('dark', isDark);
     };
-
     applyTheme(user?.theme || 'system');
-
-    const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
-    const handleChange = () => {
-      if (user?.theme === 'system' || !user?.theme) applyTheme('system');
-    };
-    mediaQuery.addEventListener('change', handleChange);
-    return () => mediaQuery.removeEventListener('change', handleChange);
   }, [user?.theme]);
 
-  // Persistence
-  useEffect(() => { saveEmails(emails); }, [emails]);
-  useEffect(() => { saveSenders(senders); }, [senders]);
-  useEffect(() => { saveUser(user); }, [user]);
+  // 4. Persistence
+  useEffect(() => { saveEmailsLocal(emails); }, [emails]);
+  useEffect(() => { saveSendersLocal(senders); }, [senders]);
 
-  // Actions
   const handleSelectEmail = (id: string) => {
     setSelectedEmailId(id);
     setView('READING');
+    setEmails(prev => prev.map(e => e.id === id ? { ...e, isRead: true } : e));
   };
 
   const handleToggleRead = (id: string) => {
     setEmails(prev => prev.map(e => e.id === id ? { ...e, isRead: !e.isRead } : e));
   };
 
-  const handleAddSender = (email: string, name: string) => {
-    const newSender: Sender = {
-      email,
-      name,
-      avatarColor: COLORS[Math.floor(Math.random() * COLORS.length)],
-    };
-    setSenders(prev => [...prev, newSender]);
-  };
+  const handleSummarizeDay = async (dateStr: string) => {
+    setIsSummarizingDay(true);
+    try {
+      // Filtrar e-mails da data selecionada
+      const emailsOfToday = emails.filter(e => e.receivedAt.startsWith(dateStr));
+      
+      if (emailsOfToday.length === 0) {
+        alert("Nenhum e-mail encontrado para esta data na sua lista local.");
+        return;
+      }
 
-  const handleRemoveSender = (email: string) => {
-    setSenders(prev => prev.filter(s => s.email !== email));
-  };
-
-  const handleThemeChange = (theme: Theme) => {
-    if (user) {
-      setUser({ ...user, theme });
+      const summary = await summarizeDailyDigest(dateStr, emailsOfToday);
+      setDailyDigest({ date: dateStr, text: summary });
+    } catch (err) {
+      console.error(err);
+      alert("Falha ao gerar o resumo diário.");
+    } finally {
+      setIsSummarizingDay(false);
     }
   };
 
   const handleLogin = async () => {
-    if (!isGoogleReady) {
-      alert("Serviços do Google carregando... tente em instantes.");
-      return;
-    }
-
     try {
-      const googleUser = await loginToGoogle();
-      const userWithTheme = { ...googleUser, theme: user?.theme || 'system' };
-      setUser(userWithTheme);
+      const result = await signInWithPopup(auth, googleProvider);
+      const credential = GoogleAuthProvider.credentialFromResult(result);
+      if (credential?.accessToken) {
+        // @ts-ignore
+        gapi.client.setToken({ access_token: credential.accessToken });
+      }
       setView('INBOX');
       handleGmailSync();
     } catch (error) {
       console.error("Login Failed", error);
-      alert("Erro ao conectar com Google. Verifique o console.");
     }
   };
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    await signOut(auth);
     setUser(null);
-    setEmails([]); // Clear for privacy
-    setView('INBOX'); // Reset to default view for next login
+    setEmails([]);
+    setSenders(INITIAL_SENDERS);
+    setView('INBOX');
   };
 
   const handleGmailSync = async () => {
     if (isSyncing || !user || !isGoogleReady) return;
     setIsSyncing(true);
-
     try {
-      const newEmails = await fetchGmailMessages(20);
+      const newEmails = await fetchGmailMessages(30);
       setEmails(prev => {
         const existingIds = new Set(prev.map(e => e.id));
-        const uniqueNewEmails = newEmails.filter(e => !existingIds.has(e.id));
-        return [...uniqueNewEmails, ...prev].sort((a, b) => new Date(b.receivedAt).getTime() - new Date(a.receivedAt).getTime());
+        const senderEmails = new Set(senders.map(s => s.email.toLowerCase()));
+        const filteredNew = newEmails.filter(e => {
+          return senderEmails.has(e.senderEmail.toLowerCase()) && !existingIds.has(e.id);
+        });
+        if (filteredNew.length === 0) return prev;
+        return [...filteredNew, ...prev].sort((a, b) => 
+          new Date(b.receivedAt).getTime() - new Date(a.receivedAt).getTime()
+        ).slice(0, 100);
       });
     } catch (error) {
       console.error("Sync Failed", error);
@@ -134,56 +154,36 @@ const App: React.FC = () => {
     }
   };
 
-  // Se não houver usuário, exibe tela de Welcome
   if (!user) {
     return <Welcome onLogin={handleLogin} isLoading={!isGoogleReady} />;
   }
 
-  // View Routing
   const renderView = () => {
     if (view === 'READING' && selectedEmailId) {
       const email = emails.find(e => e.id === selectedEmailId);
       if (!email) return <div>Email não encontrado</div>;
-      return (
-        <EmailReader 
-          email={email} 
-          onBack={() => setView('INBOX')}
-          onToggleRead={handleToggleRead}
-        />
-      );
+      return <EmailReader email={email} onBack={() => setView('INBOX')} onToggleRead={handleToggleRead} />;
     }
-
     if (view === 'SENDERS') {
-      return (
-        <SenderManager 
-          senders={senders} 
-          onAddSender={handleAddSender} 
-          onRemoveSender={handleRemoveSender}
-          onClose={() => setView('INBOX')}
-        />
-      );
+      return <SenderManager senders={senders} onAddSender={(e, n) => {}} onRemoveSender={handleRemoveSender} onClose={() => setView('INBOX')} />;
     }
-
     if (view === 'PROFILE') {
-      return (
-        <Profile 
-          user={user}
-          onLogin={handleLogin}
-          onLogout={handleLogout}
-          onThemeChange={handleThemeChange}
-          onClose={() => setView('INBOX')}
-        />
-      );
+      return <Profile user={user} onLogin={handleLogin} onLogout={handleLogout} onThemeChange={(t) => setUser({...user, theme: t})} onClose={() => setView('INBOX')} />;
     }
-
     return (
       <EmailList 
         emails={emails} 
-        onSelectEmail={handleSelectEmail}
-        filterUnread={filterUnread}
+        onSelectEmail={handleSelectEmail} 
+        filterUnread={filterUnread} 
         onToggleFilter={() => setFilterUnread(!filterUnread)}
+        onSummarizeDay={handleSummarizeDay}
       />
     );
+  };
+
+  const handleRemoveSender = async (email: string) => {
+    setSenders(prev => prev.filter(s => s.email !== email));
+    if (auth.currentUser) await removeSenderFromCloud(auth.currentUser.uid, email);
   };
 
   return (
@@ -193,33 +193,78 @@ const App: React.FC = () => {
       </div>
 
       {view === 'INBOX' && (
-        <div className="bg-white dark:bg-gray-900 border-t border-gray-100 dark:border-gray-800 p-2 flex justify-around items-center safe-area-pb transition-colors duration-200">
-          <button 
-            onClick={() => setView('SENDERS')}
-            className="flex flex-col items-center gap-1 p-2 text-gray-400 dark:text-gray-500 hover:text-blue-600 dark:hover:text-blue-400 transition-colors"
-          >
+        <div className="bg-white dark:bg-gray-900 border-t border-gray-100 dark:border-gray-800 p-2 pb-6 flex justify-around items-center transition-colors duration-200 z-10">
+          <button onClick={() => setView('SENDERS')} className="flex flex-col items-center gap-1 p-2 text-gray-400 hover:text-blue-600">
             <Settings size={20} />
             <span className="text-[10px] font-medium">Fontes</span>
           </button>
           
-          <button 
-            onClick={handleGmailSync}
-            disabled={isSyncing}
-            className={`flex flex-col items-center gap-1 p-2 transition-colors ${
-              isSyncing ? 'text-blue-600 dark:text-blue-400' : 'text-gray-400 dark:text-gray-500 hover:text-blue-600 dark:hover:text-blue-400'
-            }`}
-          >
+          <button onClick={handleGmailSync} disabled={isSyncing} className={`flex flex-col items-center gap-1 p-2 ${isSyncing ? 'text-blue-600' : 'text-gray-400'}`}>
             <RefreshCw size={24} className={isSyncing ? 'animate-spin' : ''} />
             <span className="text-[10px] font-medium">{isSyncing ? 'Buscando...' : 'Sincronizar'}</span>
           </button>
 
-          <button 
-            onClick={() => setView('PROFILE')}
-            className="flex flex-col items-center gap-1 p-2 text-gray-400 dark:text-gray-500 hover:text-blue-600 dark:hover:text-blue-400 transition-colors"
-          >
-            <UserIcon size={20} className="text-blue-600 dark:text-blue-400" />
-            <span className="text-[10px] font-medium text-blue-600 dark:text-blue-400">Perfil</span>
+          <button onClick={() => setView('PROFILE')} className="flex flex-col items-center gap-1 p-2 text-blue-600">
+            <UserIcon size={20} />
+            <span className="text-[10px] font-medium">Perfil</span>
           </button>
+        </div>
+      )}
+
+      {/* Daily Digest Modal / Loader */}
+      {(isSummarizingDay || dailyDigest) && (
+        <div className="fixed inset-0 z-50 flex items-end justify-center">
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => !isSummarizingDay && setDailyDigest(null)} />
+          
+          <div className="relative w-full max-w-md bg-white dark:bg-gray-800 rounded-t-[32px] p-6 pt-2 shadow-2xl animate-in slide-in-from-bottom duration-300">
+            <div className="w-12 h-1.5 bg-gray-200 dark:bg-gray-700 rounded-full mx-auto my-4" />
+            
+            <div className="flex items-center justify-between mb-6">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 bg-blue-600 rounded-2xl shadow-lg shadow-blue-200 dark:shadow-none">
+                  <Sparkles size={20} className="text-white fill-current" />
+                </div>
+                <div>
+                  <h3 className="text-lg font-bold text-gray-900 dark:text-white">Resumo do Dia</h3>
+                  <p className="text-xs text-gray-500 dark:text-gray-400">
+                    {dailyDigest ? new Date(dailyDigest.date).toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' }) : 'Processando...'}
+                  </p>
+                </div>
+              </div>
+              <button 
+                disabled={isSummarizingDay}
+                onClick={() => setDailyDigest(null)}
+                className="p-2 text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-full transition-colors disabled:opacity-0"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            <div className="min-h-[200px] max-h-[60vh] overflow-y-auto no-scrollbar mb-8">
+              {isSummarizingDay ? (
+                <div className="flex flex-col items-center justify-center py-12 space-y-4">
+                  <Loader2 className="w-10 h-10 text-blue-600 animate-spin" />
+                  <div className="text-center">
+                    <p className="text-sm font-bold text-gray-900 dark:text-white">Curando suas notícias...</p>
+                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">Isso pode levar alguns segundos.</p>
+                  </div>
+                </div>
+              ) : (
+                <div className="whitespace-pre-wrap text-[15px] leading-relaxed text-gray-700 dark:text-gray-300 bg-blue-50/30 dark:bg-blue-900/10 p-5 rounded-2xl border border-blue-50 dark:border-blue-800/50">
+                  {dailyDigest?.text}
+                </div>
+              )}
+            </div>
+
+            {!isSummarizingDay && (
+              <button 
+                onClick={() => setDailyDigest(null)}
+                className="w-full bg-gray-900 dark:bg-white text-white dark:text-gray-900 py-4 rounded-2xl font-bold transition-transform active:scale-95 shadow-xl"
+              >
+                Fechar Digest
+              </button>
+            )}
+          </div>
         </div>
       )}
     </div>

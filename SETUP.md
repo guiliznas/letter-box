@@ -1,71 +1,65 @@
-# 🚀 Guia de Configuração - LetterBox
+# 🚀 Guia de Configuração - LetterBox (Híbrido)
 
-Siga estes passos para configurar as APIs necessárias e realizar o deploy do LetterBox na Vercel.
-
----
-
-## 1. Configuração do Google Cloud Console (Autenticação e Gmail)
-
-O app usa a API do Gmail para ler newsletters diretamente do seu navegador.
-
-1.  Acesse o [Google Cloud Console](https://console.cloud.google.com/).
-2.  Crie um novo projeto chamado `LetterBox`.
-3.  No menu lateral, vá em **APIs e Serviços > Biblioteca**.
-4.  Pesquise por **Gmail API** e clique em **Ativar**.
-5.  Vá para **Tela de Consentimento OAuth**:
-    *   Escolha `External`.
-    *   Preencha as informações básicas (App name, suporte email).
-    *   Em **Escopos (Scopes)**, adicione: `https://www.googleapis.com/auth/gmail.readonly`.
-    *   Adicione seu email como **Usuário de Teste** (obrigatório enquanto o app não for verificado).
-6.  Vá para **Credenciais**:
-    *   Clique em `Criar Credenciais` > `ID do cliente OAuth`.
-    *   Tipo: `Aplicativo da Web`.
-    *   **Origens JavaScript autorizadas**: Adicione `http://localhost:3000` e a URL da sua Vercel (ex: `https://seu-app.vercel.app`).
-    *   Copie o **Client ID**.
-7.  Ainda em **Credenciais**, clique em `Criar Credenciais` > `Chave de API`. Copie a **API Key**.
+O LetterBox utiliza **Firebase** para gerenciamento de identidade e preferências, e a **API do Gmail** para acesso direto aos dados.
 
 ---
 
-## 2. Configuração do Google AI (Gemini)
+## 1. Google Cloud Console (Para Gmail API)
 
-Para os recursos de resumo por IA:
-
-1.  Acesse o [Google AI Studio](https://aistudio.google.com/).
-2.  Clique em **Get API Key**.
-3.  Gere uma nova chave e copie-a.
+1.  Crie um projeto no [Google Cloud Console](https://console.cloud.google.com/).
+2.  Ative a **Gmail API**.
+3.  Em **Tela de Consentimento OAuth**, adicione o escopo: `https://www.googleapis.com/auth/gmail.readonly`.
+4.  Crie um **ID do cliente OAuth** (App da Web). 
+    *   Adicione as URLs autorizadas da Vercel e `http://localhost:3000`.
 
 ---
 
-## 3. Variáveis de Ambiente
+## 2. Firebase Console (Para Auth e Senders)
 
-Crie um arquivo `.env` na raiz do projeto (ou adicione no painel da Vercel) com as seguintes chaves:
+1.  Crie um projeto no [Firebase Console](https://console.firebase.google.com/).
+2.  **Authentication**: Ative o provedor **Google**.
+3.  **Firestore Database**: 
+    *   Crie um banco de dados em "Production Mode".
+    *   Vá em **Rules** e cole as seguintes regras de segurança:
+    ```javascript
+    rules_version = '2';
+    service cloud.firestore {
+      match /databases/{database}/documents {
+        match /users/{userId}/{document=**} {
+          allow read, write: if request.auth != null && request.auth.uid == userId;
+        }
+      }
+    }
+    ```
+4.  Crie um **Web App** no Firebase e copie o objeto `firebaseConfig`.
+
+---
+
+## 3. Variáveis de Ambiente (.env)
+
+No seu ambiente local ou painel da Vercel:
 
 ```env
-VITE_GOOGLE_API_KEY=sua_chave_de_api_google
-VITE_GOOGLE_CLIENT_ID=seu_client_id_oauth.apps.googleusercontent.com
-VITE_GEMINI_API_KEY=sua_chave_do_gemini
+# Google GAPI (Gmail)
+VITE_GOOGLE_API_KEY=...
+VITE_GOOGLE_CLIENT_ID=...
+
+# Gemini AI
+VITE_GEMINI_API_KEY=...
+
+# Firebase
+VITE_FIREBASE_API_KEY=...
+VITE_FIREBASE_AUTH_DOMAIN=...
+VITE_FIREBASE_PROJECT_ID=...
+VITE_FIREBASE_STORAGE_BUCKET=...
+VITE_FIREBASE_MESSAGING_SENDER_ID=...
+VITE_FIREBASE_APP_ID=...
 ```
 
 ---
 
-## 4. Testes Unitários 🧪
+## 4. Funcionamento Offline e Anti-Duplicação
 
-Para garantir que o app está funcionando conforme o esperado, consulte o arquivo [TESTING.md](./TESTING.md) para instruções sobre como rodar a suíte de testes unitários.
-
----
-
-## 5. Deploy na Vercel
-
-1.  Empurre seu código para um repositório GitHub.
-2.  Importe o projeto na [Vercel](https://vercel.com).
-3.  No passo "Environment Variables", cole as chaves do passo anterior.
-4.  O comando de build padrão (`npm run build`) e diretório (`dist`) devem funcionar automaticamente.
-
----
-
-## 6. Notas sobre PWA
-
-O LetterBox já está configurado como PWA. Para garantir a instalação:
-*   O deploy deve ser feito obrigatoriamente via **HTTPS**.
-*   No iOS, clique em "Compartilhar" > "Adicionar à Tela de Início".
-*   No Android, um banner de instalação aparecerá automaticamente após alguns segundos de uso.
+*   **Offline**: Todos os e-mails lidos são armazenados no `localStorage` do navegador. Se não houver internet, o app carrega esses dados instantaneamente.
+*   **Filtro Inteligente**: O app só importa e-mails cujos remetentes estão cadastrados na aba "Fontes" (salvos no Firestore).
+*   **Anti-Duplicação**: Durante a sincronização, o app verifica o `messageId` único do Gmail. Se o ID já existir no armazenamento local, ele é ignorado, garantindo uma lista limpa.
