@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { User, Theme } from '../types';
-import { LogOut, User as UserIcon, Loader2, Moon, Sun, Monitor } from 'lucide-react';
+import { LogOut, User as UserIcon, Loader2, Moon, Sun, Monitor, Sparkles, ChevronRight } from 'lucide-react';
 
 interface ProfileProps {
   user: User | null;
@@ -8,9 +8,10 @@ interface ProfileProps {
   onLogout: () => void;
   onClose: () => void;
   onThemeChange: (theme: Theme) => void;
+  onOpenAiSettings: () => void;
 }
 
-export const Profile: React.FC<ProfileProps> = ({ user, onLogin, onLogout, onClose, onThemeChange }) => {
+export const Profile: React.FC<ProfileProps> = ({ user, onLogin, onLogout, onClose, onThemeChange, onOpenAiSettings }) => {
   const [isLoading, setIsLoading] = useState(false);
 
   const handleLoginClick = async () => {
@@ -63,6 +64,19 @@ export const Profile: React.FC<ProfileProps> = ({ user, onLogin, onLogout, onClo
                 <div className="w-2 h-2 rounded-full bg-green-500"></div>
                 Gmail Connected
             </div>
+
+            <button
+              onClick={onOpenAiSettings}
+              className="w-full flex items-center justify-between p-4 mb-8 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
+            >
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-blue-50 dark:bg-blue-900/30 rounded-lg">
+                  <Sparkles size={16} className="text-blue-600 dark:text-blue-400" />
+                </div>
+                <span className="text-sm font-medium text-gray-800 dark:text-gray-200">Inteligência Artificial</span>
+              </div>
+              <ChevronRight size={18} className="text-gray-400" />
+            </button>
 
             <div className="w-full mb-8">
               <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-3 text-left">App Theme</h4>

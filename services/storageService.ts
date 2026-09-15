@@ -1,4 +1,4 @@
-import { EmailItem, Sender, User } from '../types';
+import { AiConfig, EmailItem, Sender, User } from '../types';
 import { INITIAL_EMAILS, INITIAL_SENDERS } from '../constants';
 import { db, collection, doc, setDoc, deleteDoc, getDocs } from './firebase';
 
@@ -6,6 +6,7 @@ const KEYS = {
   EMAILS: 'letterbox_emails',
   SENDERS: 'letterbox_senders',
   USER: 'letterbox_user',
+  AI_CONFIG: 'letterbox_ai_config',
 };
 
 // --- E-mails (Local Cache Only for Offline) ---
@@ -20,6 +21,22 @@ export const loadEmailsLocal = (): EmailItem[] => {
     return JSON.parse(stored);
   } catch (e) {
     return INITIAL_EMAILS;
+  }
+};
+
+// --- Configuração de IA (somente neste dispositivo) ---
+export const saveAiConfig = (config: AiConfig | null) => {
+  if (config) localStorage.setItem(KEYS.AI_CONFIG, JSON.stringify(config));
+  else localStorage.removeItem(KEYS.AI_CONFIG);
+};
+
+export const loadAiConfig = (): AiConfig | null => {
+  const stored = localStorage.getItem(KEYS.AI_CONFIG);
+  if (!stored) return null;
+  try {
+    return JSON.parse(stored);
+  } catch {
+    return null;
   }
 };
 

@@ -110,7 +110,7 @@ Para o app ser instalável e confiável:
 1.  Crie um repositório no GitHub.
 2.  Conecte o repositório à Vercel.
 3.  **Variáveis de Ambiente**:
-    *   Configure `VITE_GEMINI_API_KEY`, `VITE_FIREBASE_API_KEY`, etc., no painel da Vercel.
+    *   Configure `VITE_FIREBASE_API_KEY`, `VITE_GOOGLE_CLIENT_ID`, etc., no painel da Vercel. A chave de IA não vai no build: cada usuário configura a sua dentro do app.
 4.  **Build Command**: `npm run build` (ou `tsc && vite build`).
 5.  **Output Directory**: `dist`.
 
