@@ -1,16 +1,17 @@
-import React, { useState, useEffect } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { AiConfig, EmailItem, Sender, ViewState, User, Theme } from './types';
 import {
-  loadEmailsLocal, saveEmailsLocal,
+  loadEmails, putEmails, updateEmailRead, clearEmails,
   loadSendersLocal, saveSendersLocal,
   loadUserLocal, saveUserLocal,
-  loadSendersFromCloud, removeSenderFromCloud,
-  loadAiConfig, saveAiConfig
+  loadSendersFromCloud, syncSenderToCloud, removeSenderFromCloud,
+  loadAiConfig, saveAiConfig,
+  loadSyncCursor, saveSyncCursor
 } from './services/storageService';
 import { auth, googleProvider, signInWithPopup, onAuthStateChanged, signOut, GoogleAuthProvider } from './services/firebase';
-import { initGoogleClient, fetchGmailMessages } from './services/googleService';
+import { initGoogleClient, fetchGmailPage } from './services/googleService';
 import { MissingAiConfigError, summarizeDailyDigest } from './services/aiService';
-import { INITIAL_SENDERS } from './constants';
+import { COLORS } from './constants';
 import { EmailList } from './components/EmailList';
 import { SenderManager } from './components/SenderManager';
 import { EmailReader } from './components/EmailReader';
@@ -18,6 +19,8 @@ import { Profile } from './components/Profile';
 import { AiSettings } from './components/AiSettings';
 import { Welcome } from './components/Welcome';
 import { Settings, RefreshCw, User as UserIcon, X, Sparkles, Loader2 } from 'lucide-react';
+
+const PAGE_SIZE = 20;
 
 const App: React.FC = () => {
   const [emails, setEmails] = useState<EmailItem[]>([]);
@@ -29,22 +32,25 @@ const App: React.FC = () => {
   const [selectedEmailId, setSelectedEmailId] = useState<string | null>(null);
   const [filterUnread, setFilterUnread] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [isGoogleReady, setIsGoogleReady] = useState(false);
+  const [pageToken, setPageToken] = useState<string | null>(null);
+  const [reachedEnd, setReachedEnd] = useState(false);
 
-  // Daily Digest State
   const [dailyDigest, setDailyDigest] = useState<{ date: string, text: string } | null>(null);
   const [isSummarizingDay, setIsSummarizingDay] = useState(false);
 
-  // 1. Initialize data from LocalStorage
+  // 1. Dados locais (cache offline)
   useEffect(() => {
     setUser(loadUserLocal());
-    setEmails(loadEmailsLocal());
     setSenders(loadSendersLocal());
     setAiConfig(loadAiConfig());
+    setPageToken(loadSyncCursor());
+    loadEmails().then(setEmails);
     initGoogleClient(() => setIsGoogleReady(true));
   }, []);
 
-  // 2. Firebase Auth Listener
+  // 2. Sessão do Firebase
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
       if (firebaseUser) {
@@ -68,27 +74,40 @@ const App: React.FC = () => {
     return () => unsubscribe();
   }, []);
 
-  // 3. Theme Management
+  // 3. Tema
   useEffect(() => {
-    const applyTheme = (theme: Theme) => {
-      const isDark = theme === 'dark' || (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
-      document.documentElement.classList.toggle('dark', isDark);
-    };
-    applyTheme(user?.theme || 'system');
+    const isDark = user?.theme === 'dark'
+      || ((user?.theme || 'system') === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+    document.documentElement.classList.toggle('dark', isDark);
   }, [user?.theme]);
 
-  // 4. Persistence
-  useEffect(() => { saveEmailsLocal(emails); }, [emails]);
   useEffect(() => { saveSendersLocal(senders); }, [senders]);
+
+  const mergeEmails = (incoming: EmailItem[]) => {
+    setEmails(prev => {
+      const existingIds = new Set(prev.map(e => e.id));
+      const fresh = incoming.filter(e => !existingIds.has(e.id));
+      if (fresh.length === 0) return prev;
+      return [...prev, ...fresh].sort(
+        (a, b) => new Date(b.receivedAt).getTime() - new Date(a.receivedAt).getTime()
+      );
+    });
+    putEmails(incoming);
+  };
 
   const handleSelectEmail = (id: string) => {
     setSelectedEmailId(id);
     setView('READING');
     setEmails(prev => prev.map(e => e.id === id ? { ...e, isRead: true } : e));
+    updateEmailRead(id, true);
   };
 
   const handleToggleRead = (id: string) => {
-    setEmails(prev => prev.map(e => e.id === id ? { ...e, isRead: !e.isRead } : e));
+    const target = emails.find(e => e.id === id);
+    if (!target) return;
+    const next = !target.isRead;
+    setEmails(prev => prev.map(e => e.id === id ? { ...e, isRead: next } : e));
+    updateEmailRead(id, next);
   };
 
   const handleSaveAiConfig = (config: AiConfig | null) => {
@@ -104,11 +123,10 @@ const App: React.FC = () => {
 
     setIsSummarizingDay(true);
     try {
-      // Filtrar e-mails da data selecionada
       const emailsOfToday = emails.filter(e => e.receivedAt.startsWith(dateStr));
 
       if (emailsOfToday.length === 0) {
-        alert("Nenhum e-mail encontrado para esta data na sua lista local.");
+        alert('Nenhum e-mail encontrado para esta data na sua lista local.');
         return;
       }
 
@@ -134,9 +152,8 @@ const App: React.FC = () => {
         gapi.client.setToken({ access_token: credential.accessToken });
       }
       setView('INBOX');
-      handleGmailSync();
     } catch (error) {
-      console.error("Login Failed", error);
+      console.error('Login Failed', error);
     }
   };
 
@@ -144,31 +161,68 @@ const App: React.FC = () => {
     await signOut(auth);
     setUser(null);
     setEmails([]);
-    setSenders(INITIAL_SENDERS);
+    setSenders([]);
+    setPageToken(null);
+    setReachedEnd(false);
+    saveSyncCursor(null);
+    await clearEmails();
     setView('INBOX');
   };
 
+  // Primeira página: recomeça a paginação do zero.
   const handleGmailSync = async () => {
-    if (isSyncing || !user || !isGoogleReady) return;
+    if (isSyncing || !user || !isGoogleReady || senders.length === 0) return;
     setIsSyncing(true);
     try {
-      const newEmails = await fetchGmailMessages(30);
-      setEmails(prev => {
-        const existingIds = new Set(prev.map(e => e.id));
-        const senderEmails = new Set(senders.map(s => s.email.toLowerCase()));
-        const filteredNew = newEmails.filter(e => {
-          return senderEmails.has(e.senderEmail.toLowerCase()) && !existingIds.has(e.id);
-        });
-        if (filteredNew.length === 0) return prev;
-        return [...filteredNew, ...prev].sort((a, b) =>
-          new Date(b.receivedAt).getTime() - new Date(a.receivedAt).getTime()
-        ).slice(0, 100);
-      });
+      const { emails: page, nextPageToken } = await fetchGmailPage(
+        senders.map(s => s.email), null, PAGE_SIZE
+      );
+      mergeEmails(page);
+      setPageToken(nextPageToken);
+      saveSyncCursor(nextPageToken);
+      setReachedEnd(!nextPageToken);
     } catch (error) {
-      console.error("Sync Failed", error);
+      console.error('Sync Failed', error);
     } finally {
       setIsSyncing(false);
     }
+  };
+
+  // Scroll infinito: continua de onde a última página parou.
+  const handleLoadMore = useCallback(async () => {
+    if (isLoadingMore || isSyncing || !pageToken || !isGoogleReady || senders.length === 0) return;
+    setIsLoadingMore(true);
+    try {
+      const { emails: page, nextPageToken } = await fetchGmailPage(
+        senders.map(s => s.email), pageToken, PAGE_SIZE
+      );
+      mergeEmails(page);
+      setPageToken(nextPageToken);
+      saveSyncCursor(nextPageToken);
+      setReachedEnd(!nextPageToken);
+    } catch (error) {
+      console.error('Falha ao carregar mais e-mails', error);
+    } finally {
+      setIsLoadingMore(false);
+    }
+  }, [isLoadingMore, isSyncing, pageToken, isGoogleReady, senders]);
+
+  const handleAddSender = async (email: string, name: string) => {
+    const normalized = email.trim().toLowerCase();
+    if (senders.some(s => s.email.toLowerCase() === normalized)) return;
+
+    const sender: Sender = {
+      email: normalized,
+      name: name.trim(),
+      avatarColor: COLORS[senders.length % COLORS.length],
+    };
+    setSenders(prev => [...prev, sender]);
+    if (auth.currentUser) await syncSenderToCloud(auth.currentUser.uid, sender);
+  };
+
+  const handleRemoveSender = async (email: string) => {
+    setSenders(prev => prev.filter(s => s.email !== email));
+    if (auth.currentUser) await removeSenderFromCloud(auth.currentUser.uid, email);
   };
 
   if (!user) {
@@ -178,7 +232,7 @@ const App: React.FC = () => {
   const renderView = () => {
     if (view === 'READING' && selectedEmailId) {
       const email = emails.find(e => e.id === selectedEmailId);
-      if (!email) return <div>Email não encontrado</div>;
+      if (!email) return <div>E-mail não encontrado</div>;
       return (
         <EmailReader
           email={email}
@@ -190,7 +244,14 @@ const App: React.FC = () => {
       );
     }
     if (view === 'SENDERS') {
-      return <SenderManager senders={senders} onAddSender={(e, n) => {}} onRemoveSender={handleRemoveSender} onClose={() => setView('INBOX')} />;
+      return (
+        <SenderManager
+          senders={senders}
+          onAddSender={handleAddSender}
+          onRemoveSender={handleRemoveSender}
+          onClose={() => setView('INBOX')}
+        />
+      );
     }
     if (view === 'SETTINGS') {
       return (
@@ -207,7 +268,11 @@ const App: React.FC = () => {
           user={user}
           onLogin={handleLogin}
           onLogout={handleLogout}
-          onThemeChange={(t) => setUser({...user, theme: t})}
+          onThemeChange={(t) => {
+            const updated = { ...user, theme: t };
+            setUser(updated);
+            saveUserLocal(updated);
+          }}
           onOpenAiSettings={() => setView('SETTINGS')}
           onClose={() => setView('INBOX')}
         />
@@ -220,13 +285,11 @@ const App: React.FC = () => {
         filterUnread={filterUnread}
         onToggleFilter={() => setFilterUnread(!filterUnread)}
         onSummarizeDay={handleSummarizeDay}
+        onLoadMore={handleLoadMore}
+        hasMore={Boolean(pageToken) && !reachedEnd}
+        isLoadingMore={isLoadingMore}
       />
     );
-  };
-
-  const handleRemoveSender = async (email: string) => {
-    setSenders(prev => prev.filter(s => s.email !== email));
-    if (auth.currentUser) await removeSenderFromCloud(auth.currentUser.uid, email);
   };
 
   return (
