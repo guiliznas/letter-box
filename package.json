@@ -9,7 +9,9 @@
     "preview": "vite preview",
     "test": "vitest",
     "test:run": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "dev:mock": "vite --mode mock",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "@testing-library/react": "^16.3.1",
@@ -19,6 +21,7 @@
     "vitest": "^4.0.16"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@testing-library/jest-dom": "^7.0.1",
     "@types/node": "^22.14.0",
     "@vitejs/plugin-react": "^5.0.0",
