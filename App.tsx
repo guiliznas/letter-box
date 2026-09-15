@@ -1,19 +1,21 @@
 import React, { useState, useEffect } from 'react';
-import { EmailItem, Sender, ViewState, User, Theme } from './types';
-import { 
-  loadEmailsLocal, saveEmailsLocal, 
-  loadSendersLocal, saveSendersLocal, 
+import { AiConfig, EmailItem, Sender, ViewState, User, Theme } from './types';
+import {
+  loadEmailsLocal, saveEmailsLocal,
+  loadSendersLocal, saveSendersLocal,
   loadUserLocal, saveUserLocal,
-  loadSendersFromCloud, syncSendersToCloud, removeSenderFromCloud
+  loadSendersFromCloud, removeSenderFromCloud,
+  loadAiConfig, saveAiConfig
 } from './services/storageService';
 import { auth, googleProvider, signInWithPopup, onAuthStateChanged, signOut, GoogleAuthProvider } from './services/firebase';
 import { initGoogleClient, fetchGmailMessages } from './services/googleService';
-import { summarizeDailyDigest } from './services/geminiService';
-import { COLORS, INITIAL_SENDERS } from './constants';
+import { MissingAiConfigError, summarizeDailyDigest } from './services/aiService';
+import { INITIAL_SENDERS } from './constants';
 import { EmailList } from './components/EmailList';
 import { SenderManager } from './components/SenderManager';
 import { EmailReader } from './components/EmailReader';
 import { Profile } from './components/Profile';
+import { AiSettings } from './components/AiSettings';
 import { Welcome } from './components/Welcome';
 import { Settings, RefreshCw, User as UserIcon, X, Sparkles, Loader2 } from 'lucide-react';
 
@@ -21,7 +23,8 @@ const App: React.FC = () => {
   const [emails, setEmails] = useState<EmailItem[]>([]);
   const [senders, setSenders] = useState<Sender[]>([]);
   const [user, setUser] = useState<User | null>(null);
-  
+  const [aiConfig, setAiConfig] = useState<AiConfig | null>(null);
+
   const [view, setView] = useState<ViewState>('INBOX');
   const [selectedEmailId, setSelectedEmailId] = useState<string | null>(null);
   const [filterUnread, setFilterUnread] = useState(false);
@@ -37,6 +40,7 @@ const App: React.FC = () => {
     setUser(loadUserLocal());
     setEmails(loadEmailsLocal());
     setSenders(loadSendersLocal());
+    setAiConfig(loadAiConfig());
     initGoogleClient(() => setIsGoogleReady(true));
   }, []);
 
@@ -87,22 +91,35 @@ const App: React.FC = () => {
     setEmails(prev => prev.map(e => e.id === id ? { ...e, isRead: !e.isRead } : e));
   };
 
+  const handleSaveAiConfig = (config: AiConfig | null) => {
+    setAiConfig(config);
+    saveAiConfig(config);
+  };
+
   const handleSummarizeDay = async (dateStr: string) => {
+    if (!aiConfig) {
+      setView('SETTINGS');
+      return;
+    }
+
     setIsSummarizingDay(true);
     try {
       // Filtrar e-mails da data selecionada
       const emailsOfToday = emails.filter(e => e.receivedAt.startsWith(dateStr));
-      
+
       if (emailsOfToday.length === 0) {
         alert("Nenhum e-mail encontrado para esta data na sua lista local.");
         return;
       }
 
-      const summary = await summarizeDailyDigest(dateStr, emailsOfToday);
+      const summary = await summarizeDailyDigest(aiConfig, dateStr, emailsOfToday);
       setDailyDigest({ date: dateStr, text: summary });
     } catch (err) {
-      console.error(err);
-      alert("Falha ao gerar o resumo diário.");
+      if (err instanceof MissingAiConfigError) {
+        setView('SETTINGS');
+        return;
+      }
+      alert(err instanceof Error ? err.message : 'Falha ao gerar o resumo diário.');
     } finally {
       setIsSummarizingDay(false);
     }
@@ -143,7 +160,7 @@ const App: React.FC = () => {
           return senderEmails.has(e.senderEmail.toLowerCase()) && !existingIds.has(e.id);
         });
         if (filteredNew.length === 0) return prev;
-        return [...filteredNew, ...prev].sort((a, b) => 
+        return [...filteredNew, ...prev].sort((a, b) =>
           new Date(b.receivedAt).getTime() - new Date(a.receivedAt).getTime()
         ).slice(0, 100);
       });
@@ -162,19 +179,45 @@ const App: React.FC = () => {
     if (view === 'READING' && selectedEmailId) {
       const email = emails.find(e => e.id === selectedEmailId);
       if (!email) return <div>Email não encontrado</div>;
-      return <EmailReader email={email} onBack={() => setView('INBOX')} onToggleRead={handleToggleRead} />;
+      return (
+        <EmailReader
+          email={email}
+          onBack={() => setView('INBOX')}
+          onToggleRead={handleToggleRead}
+          aiConfig={aiConfig}
+          onOpenAiSettings={() => setView('SETTINGS')}
+        />
+      );
     }
     if (view === 'SENDERS') {
       return <SenderManager senders={senders} onAddSender={(e, n) => {}} onRemoveSender={handleRemoveSender} onClose={() => setView('INBOX')} />;
     }
+    if (view === 'SETTINGS') {
+      return (
+        <AiSettings
+          config={aiConfig}
+          onSave={handleSaveAiConfig}
+          onClose={() => setView('INBOX')}
+        />
+      );
+    }
     if (view === 'PROFILE') {
-      return <Profile user={user} onLogin={handleLogin} onLogout={handleLogout} onThemeChange={(t) => setUser({...user, theme: t})} onClose={() => setView('INBOX')} />;
+      return (
+        <Profile
+          user={user}
+          onLogin={handleLogin}
+          onLogout={handleLogout}
+          onThemeChange={(t) => setUser({...user, theme: t})}
+          onOpenAiSettings={() => setView('SETTINGS')}
+          onClose={() => setView('INBOX')}
+        />
+      );
     }
     return (
-      <EmailList 
-        emails={emails} 
-        onSelectEmail={handleSelectEmail} 
-        filterUnread={filterUnread} 
+      <EmailList
+        emails={emails}
+        onSelectEmail={handleSelectEmail}
+        filterUnread={filterUnread}
         onToggleFilter={() => setFilterUnread(!filterUnread)}
         onSummarizeDay={handleSummarizeDay}
       />
@@ -198,7 +241,7 @@ const App: React.FC = () => {
             <Settings size={20} />
             <span className="text-[10px] font-medium">Fontes</span>
           </button>
-          
+
           <button onClick={handleGmailSync} disabled={isSyncing} className={`flex flex-col items-center gap-1 p-2 ${isSyncing ? 'text-blue-600' : 'text-gray-400'}`}>
             <RefreshCw size={24} className={isSyncing ? 'animate-spin' : ''} />
             <span className="text-[10px] font-medium">{isSyncing ? 'Buscando...' : 'Sincronizar'}</span>
@@ -215,10 +258,10 @@ const App: React.FC = () => {
       {(isSummarizingDay || dailyDigest) && (
         <div className="fixed inset-0 z-50 flex items-end justify-center">
           <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => !isSummarizingDay && setDailyDigest(null)} />
-          
+
           <div className="relative w-full max-w-md bg-white dark:bg-gray-800 rounded-t-[32px] p-6 pt-2 shadow-2xl animate-in slide-in-from-bottom duration-300">
             <div className="w-12 h-1.5 bg-gray-200 dark:bg-gray-700 rounded-full mx-auto my-4" />
-            
+
             <div className="flex items-center justify-between mb-6">
               <div className="flex items-center gap-3">
                 <div className="p-2.5 bg-blue-600 rounded-2xl shadow-lg shadow-blue-200 dark:shadow-none">
@@ -231,7 +274,7 @@ const App: React.FC = () => {
                   </p>
                 </div>
               </div>
-              <button 
+              <button
                 disabled={isSummarizingDay}
                 onClick={() => setDailyDigest(null)}
                 className="p-2 text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-full transition-colors disabled:opacity-0"
@@ -257,7 +300,7 @@ const App: React.FC = () => {
             </div>
 
             {!isSummarizingDay && (
-              <button 
+              <button
                 onClick={() => setDailyDigest(null)}
                 className="w-full bg-gray-900 dark:bg-white text-white dark:text-gray-900 py-4 rounded-2xl font-bold transition-transform active:scale-95 shadow-xl"
               >

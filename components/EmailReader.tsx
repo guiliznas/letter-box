@@ -1,15 +1,23 @@
 import React, { useState } from 'react';
-import { EmailItem } from '../types';
+import { AiConfig, EmailItem } from '../types';
 import { ArrowLeft, CheckCircle, Circle, MoreHorizontal, Sparkles, X, Loader2 } from 'lucide-react';
-import { summarizeNewsletter } from '../services/geminiService';
+import { MissingAiConfigError, summarizeNewsletter } from '../services/aiService';
 
 interface EmailReaderProps {
   email: EmailItem;
   onBack: () => void;
   onToggleRead: (id: string) => void;
+  aiConfig: AiConfig | null;
+  onOpenAiSettings: () => void;
 }
 
-export const EmailReader: React.FC<EmailReaderProps> = ({ email, onBack, onToggleRead }) => {
+export const EmailReader: React.FC<EmailReaderProps> = ({
+  email,
+  onBack,
+  onToggleRead,
+  aiConfig,
+  onOpenAiSettings,
+}) => {
   const [showSummary, setShowSummary] = useState(false);
   const [summaryText, setSummaryText] = useState<string | null>(null);
   const [isSummarizing, setIsSummarizing] = useState(false);
@@ -26,6 +34,11 @@ export const EmailReader: React.FC<EmailReaderProps> = ({ email, onBack, onToggl
   };
 
   const handleSummarize = async () => {
+    if (!aiConfig) {
+      onOpenAiSettings();
+      return;
+    }
+
     setShowSummary(true);
     if (summaryText) return; // Já temos o resumo
 
@@ -33,10 +46,15 @@ export const EmailReader: React.FC<EmailReaderProps> = ({ email, onBack, onToggl
     try {
       // Usamos o text body ou strip de HTML se necessário
       const textToSummarize = email.bodyText || email.bodyHtml.replace(/<[^>]*>?/gm, '');
-      const result = await summarizeNewsletter(email.subject, textToSummarize);
+      const result = await summarizeNewsletter(aiConfig, email.subject, textToSummarize);
       setSummaryText(result);
     } catch (err) {
-      setSummaryText("Erro ao gerar o resumo. Tente novamente mais tarde.");
+      if (err instanceof MissingAiConfigError) {
+        setShowSummary(false);
+        onOpenAiSettings();
+        return;
+      }
+      setSummaryText(err instanceof Error ? err.message : 'Erro ao gerar o resumo.');
     } finally {
       setIsSummarizing(false);
     }
@@ -47,8 +65,9 @@ export const EmailReader: React.FC<EmailReaderProps> = ({ email, onBack, onToggl
       {/* Navbar */}
       <div className="px-4 py-3 border-b border-gray-100 dark:border-gray-800 flex items-center justify-between sticky top-0 bg-white/80 dark:bg-gray-900/80 backdrop-blur-md z-10 transition-colors duration-200">
         <div className="flex items-center gap-1">
-          <button 
+          <button
             onClick={onBack}
+            aria-label="Voltar"
             className="p-2 -ml-2 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-full transition-colors"
           >
             <ArrowLeft size={20} />
@@ -63,8 +82,9 @@ export const EmailReader: React.FC<EmailReaderProps> = ({ email, onBack, onToggl
         </div>
 
         <div className="flex items-center gap-1">
-           <button 
+           <button
             onClick={() => onToggleRead(email.id)}
+            aria-label={email.isRead ? 'Marcar como não lido' : 'Marcar como lido'}
             className={`p-2 rounded-full transition-colors ${
               email.isRead 
                 ? 'text-gray-400 dark:text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800' 

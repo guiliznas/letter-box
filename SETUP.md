@@ -44,9 +44,6 @@ No seu ambiente local ou painel da Vercel:
 VITE_GOOGLE_API_KEY=...
 VITE_GOOGLE_CLIENT_ID=...
 
-# Gemini AI
-VITE_GEMINI_API_KEY=...
-
 # Firebase
 VITE_FIREBASE_API_KEY=...
 VITE_FIREBASE_AUTH_DOMAIN=...
@@ -58,7 +55,17 @@ VITE_FIREBASE_APP_ID=...
 
 ---
 
-## 4. Funcionamento Offline e Anti-Duplicação
+## 4. Chave de IA (fornecida pelo usuário)
+
+Nenhuma chave de IA vai no build. Cada usuário configura a própria dentro do app, na tela
+**Perfil → Inteligência Artificial**, escolhendo entre Claude, OpenAI, Gemini e OpenRouter.
+
+A chave fica salva apenas no dispositivo (`localStorage` no web, Keystore no Android) e nunca é
+gravada no Firestore.
+
+---
+
+## 5. Funcionamento Offline e Anti-Duplicação
 
 *   **Offline**: Todos os e-mails lidos são armazenados no `localStorage` do navegador. Se não houver internet, o app carrega esses dados instantaneamente.
 *   **Filtro Inteligente**: O app só importa e-mails cujos remetentes estão cadastrados na aba "Fontes" (salvos no Firestore).

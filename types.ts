@@ -25,7 +25,15 @@ export interface User {
   theme: Theme;
 }
 
-export type ViewState = 'INBOX' | 'READING' | 'SENDERS' | 'PROFILE';
+export type ViewState = 'INBOX' | 'READING' | 'SENDERS' | 'PROFILE' | 'SETTINGS';
+
+export type AiProvider = 'anthropic' | 'openai' | 'gemini' | 'openrouter';
+
+export interface AiConfig {
+  provider: AiProvider;
+  apiKey: string;
+  model: string;
+}
 
 export interface AppState {
   emails: EmailItem[];
