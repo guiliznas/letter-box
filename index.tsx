@@ -2,8 +2,8 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
 
-// Service Worker Registration
-if ('serviceWorker' in navigator) {
+// O service worker é cache-first: em modo mock serviria versões velhas do app.
+if (import.meta.env.MODE !== 'mock' && 'serviceWorker' in navigator) {
   window.addEventListener('load', () => {
     navigator.serviceWorker.register('/service-worker.js')
       .then(registration => {
