@@ -1,4 +1,4 @@
-import { EmailItem, User } from '../types';
+import { EmailItem } from '../types';
 import { COLORS } from '../constants';
 
 // Safe environment variable access
@@ -109,50 +109,6 @@ export const initGoogleClient = async (onInitComplete: () => void) => {
   onInitComplete();
 };
 
-// Handle Login
-export const loginToGoogle = (): Promise<User> => {
-  if (!gisInited || !tokenClient) {
-    return Promise.reject(new Error("Google Identity Services not initialized. Check API Keys."));
-  }
-
-  return new Promise((resolve, reject) => {
-    tokenClient.callback = async (resp: any) => {
-      if (resp.error) {
-        reject(resp);
-        return;
-      }
-      
-      try {
-        // Fetch User Profile info from Gmail Profile
-        // @ts-ignore
-        const response = await window.gapi.client.gmail.users.getProfile({
-            userId: 'me'
-        });
-        
-        const email = response.result.emailAddress;
-        
-        // Since Gmail API doesn't give name/avatar easily without People API (extra scope), 
-        // we'll default nicely or use the email as name
-        const user: User = {
-            email: email,
-            name: email.split('@')[0], // Fallback name
-            theme: 'system'
-        };
-        resolve(user);
-      } catch (err) {
-          reject(err);
-      }
-    };
-
-    // @ts-ignore
-    if (Boolean(window.gapi.client.getToken()) === false) {
-      tokenClient.requestAccessToken({ prompt: 'consent' });
-    } else {
-      tokenClient.requestAccessToken({ prompt: '' });
-    }
-  });
-};
-
 // Helper to decode Base64Url
 const decodeBase64 = (data: string) => {
   try {
@@ -194,40 +150,60 @@ const getHeader = (headers: any[], name: string) => {
   return header ? header.value : '';
 };
 
-// Fetch Emails
-export const fetchGmailMessages = async (limit = 10): Promise<EmailItem[]> => {
-  try {
-    // @ts-ignore
-    if (!gapiInited || !window.gapi?.client?.gmail) {
-       throw new Error("Gmail API not initialized");
-    }
+// Mesma cor para o mesmo remetente em qualquer dispositivo.
+const colorForSender = (email: string) => {
+  let hash = 0;
+  for (let i = 0; i < email.length; i++) hash = (hash * 31 + email.charCodeAt(i)) >>> 0;
+  return COLORS[hash % COLORS.length];
+};
 
-    // 1. List Messages
-    // @ts-ignore
-    const listResponse = await window.gapi.client.gmail.users.messages.list({
-      'userId': 'me',
-      'maxResults': limit,
-      // Optional: Filter by label 'CATEGORY_UPDATES' or 'CATEGORY_PROMOTIONS' often used for newsletters
-      // 'q': 'category:updates' 
-    });
+export interface GmailPage {
+  emails: EmailItem[];
+  nextPageToken: string | null;
+}
 
-    const messages = listResponse.result.messages;
-    if (!messages || messages.length === 0) return [];
+// Uma página de e-mails, já filtrada por remetente na própria query do Gmail.
+export const fetchGmailPage = async (
+  senderEmails: string[],
+  pageToken: string | null = null,
+  limit = 20
+): Promise<GmailPage> => {
+  // @ts-ignore
+  if (!gapiInited || !window.gapi?.client?.gmail) {
+    throw new Error('Gmail API not initialized');
+  }
 
-    // 2. Fetch Details for each message
-    const emailPromises = messages.map(async (msg: any) => {
+  if (senderEmails.length === 0) return { emails: [], nextPageToken: null };
+
+  const query = `from:(${senderEmails.join(' OR ')})`;
+
+  // @ts-ignore
+  const listResponse = await window.gapi.client.gmail.users.messages.list({
+    userId: 'me',
+    maxResults: limit,
+    q: query,
+    ...(pageToken ? { pageToken } : {}),
+  });
+
+  const messages = listResponse.result.messages;
+  const nextPageToken = listResponse.result.nextPageToken || null;
+
+  if (!messages || messages.length === 0) return { emails: [], nextPageToken };
+
+  const emails = await Promise.all(
+    messages.map(async (msg: any) => {
       // @ts-ignore
       const detail = await window.gapi.client.gmail.users.messages.get({
-        'userId': 'me',
-        'id': msg.id
+        userId: 'me',
+        id: msg.id,
       });
-      
+
       const result = detail.result;
       const headers = result.payload.headers;
       const { html, text } = getBody(result.payload);
 
       const from = getHeader(headers, 'From');
-      // Extract name and email from "Name <email@domain.com>"
+      // "Name <email@domain.com>"
       const nameMatch = from.match(/(.*)<(.*)>/);
       const senderName = nameMatch ? nameMatch[1].trim().replace(/"/g, '') : from.split('@')[0];
       const senderEmail = nameMatch ? nameMatch[2].trim() : from;
@@ -236,19 +212,15 @@ export const fetchGmailMessages = async (limit = 10): Promise<EmailItem[]> => {
         id: result.id,
         senderEmail,
         senderName,
-        subject: getHeader(headers, 'Subject') || '(No Subject)',
+        subject: getHeader(headers, 'Subject') || '(Sem assunto)',
         bodyHtml: html || `<p>${text}</p>`,
-        bodyText: text || 'No preview available',
+        bodyText: text || 'Sem pré-visualização',
         receivedAt: new Date(parseInt(result.internalDate)).toISOString(),
         isRead: !result.labelIds.includes('UNREAD'),
-        avatarColor: COLORS[Math.floor(Math.random() * COLORS.length)], // Random color for now
+        avatarColor: colorForSender(senderEmail),
       } as EmailItem;
-    });
+    })
+  );
 
-    return await Promise.all(emailPromises);
-
-  } catch (error) {
-    console.error("Error fetching emails", error);
-    throw error;
-  }
+  return { emails, nextPageToken };
 };

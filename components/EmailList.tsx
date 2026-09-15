@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { EmailItem } from '../types';
-import { MailOpen, Sparkles, Calendar } from 'lucide-react';
+import { MailOpen, Sparkles, Calendar, Loader2 } from 'lucide-react';
 
 interface EmailListProps {
   emails: EmailItem[];
@@ -8,18 +8,41 @@ interface EmailListProps {
   filterUnread: boolean;
   onToggleFilter: () => void;
   onSummarizeDay: (date: string) => void;
+  onLoadMore?: () => void;
+  hasMore?: boolean;
+  isLoadingMore?: boolean;
 }
 
-export const EmailList: React.FC<EmailListProps> = ({ 
-  emails, 
-  onSelectEmail, 
-  filterUnread, 
+export const EmailList: React.FC<EmailListProps> = ({
+  emails,
+  onSelectEmail,
+  filterUnread,
   onToggleFilter,
-  onSummarizeDay
+  onSummarizeDay,
+  onLoadMore,
+  hasMore = false,
+  isLoadingMore = false,
 }) => {
   const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
-  
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+
   const filteredEmails = filterUnread ? emails.filter(e => !e.isRead) : emails;
+
+  useEffect(() => {
+    const sentinel = sentinelRef.current;
+    if (!sentinel || !onLoadMore || !hasMore || isLoadingMore) return;
+    if (typeof IntersectionObserver === 'undefined') return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting) onLoadMore();
+      },
+      { rootMargin: '200px' }
+    );
+
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [onLoadMore, hasMore, isLoadingMore, filteredEmails.length]);
 
   const formatDate = (isoString: string) => {
     const date = new Date(isoString);
@@ -116,6 +139,21 @@ export const EmailList: React.FC<EmailListProps> = ({
                 </div>
               </button>
             ))}
+
+            <div ref={sentinelRef} />
+
+            {isLoadingMore && (
+              <div className="flex items-center justify-center gap-2 py-6 text-gray-400 dark:text-gray-500">
+                <Loader2 size={16} className="animate-spin" />
+                <span className="text-xs font-medium">Carregando mais e-mails...</span>
+              </div>
+            )}
+
+            {!hasMore && !isLoadingMore && filteredEmails.length > 0 && (
+              <p className="text-center text-xs text-gray-400 dark:text-gray-600 py-6">
+                Você chegou ao fim.
+              </p>
+            )}
           </div>
         )}
       </div>
