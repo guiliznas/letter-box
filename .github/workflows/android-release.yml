@@ -1,0 +1,195 @@
+name: Android release
+
+# Push na main que mexe no app mobile gera APK assinado e publica uma Release.
+# Em PR, só compila e anexa o APK como artefato, para validar antes do merge.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'mobile/**'
+      - '.github/workflows/android-release.yml'
+  pull_request:
+    paths:
+      - 'mobile/**'
+      - '.github/workflows/android-release.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: android-release-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  FLUTTER_VERSION: '3.44.8'
+
+jobs:
+  build:
+    name: Build APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      name: ${{ steps.version.outputs.name }}
+      build: ${{ steps.version.outputs.build }}
+      tag: ${{ steps.version.outputs.tag }}
+    defaults:
+      run:
+        working-directory: mobile
+    env:
+      IS_RELEASE: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Definir versão
+        id: version
+        run: |
+          name=$(sed -nE 's/^version:[[:space:]]*([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' pubspec.yaml)
+          if [ -z "$name" ]; then
+            echo "::error file=mobile/pubspec.yaml::Não foi possível ler a versão (esperado X.Y.Z)"
+            exit 1
+          fi
+          # run_number só cresce, então serve como versionCode: o Android recusa
+          # atualizar para um versionCode menor ou igual ao instalado.
+          build="${{ github.run_number }}"
+          {
+            echo "name=$name"
+            echo "build=$build"
+            echo "tag=android-v$name-build.$build"
+            echo "apk=letterbox-v$name-build.$build.apk"
+          } >> "$GITHUB_OUTPUT"
+
+      - run: flutter pub get
+
+      - run: flutter analyze
+
+      - name: Configurar chave de assinatura
+        if: env.IS_RELEASE == 'true'
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          missing=""
+          for name in KEYSTORE_BASE64 KEYSTORE_PASSWORD KEY_ALIAS KEY_PASSWORD; do
+            if [ -z "${!name}" ]; then missing="$missing ANDROID_${name}"; fi
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::Secrets de assinatura ausentes:$missing. Sem eles o APK sairia com a chave de debug, que muda a cada build: quem já instalou não conseguiria atualizar e o login com Google quebraria."
+            exit 1
+          fi
+          echo "$KEYSTORE_BASE64" | base64 --decode > android/app/release.jks
+          cat > android/key.properties <<EOF
+          storeFile=release.jks
+          storePassword=$KEYSTORE_PASSWORD
+          keyAlias=$KEY_ALIAS
+          keyPassword=$KEY_PASSWORD
+          EOF
+
+      - name: Configurar Firebase
+        env:
+          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
+        run: |
+          if [ -n "$GOOGLE_SERVICES_JSON" ]; then
+            echo "$GOOGLE_SERVICES_JSON" | base64 --decode > android/app/google-services.json
+          else
+            echo "::warning::Secret GOOGLE_SERVICES_JSON não configurado. O APK compila, mas o login não vai funcionar."
+          fi
+
+      - name: Build
+        run: >
+          flutter build apk --release
+          --build-name=${{ steps.version.outputs.name }}
+          --build-number=${{ steps.version.outputs.build }}
+          --dart-define=GOOGLE_SERVER_CLIENT_ID=${{ vars.GOOGLE_SERVER_CLIENT_ID }}
+
+      - name: Verificar assinatura
+        env:
+          APK: ${{ steps.version.outputs.apk }}
+        run: |
+          apksigner=$(ls -d "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -1)
+          mkdir -p dist
+          cp build/app/outputs/flutter-apk/app-release.apk "dist/$APK"
+
+          certs=$("$apksigner" verify --print-certs "dist/$APK")
+          subject=$(echo "$certs" | sed -n 's/.*certificate DN: //p' | head -1)
+          sha1=$(echo "$certs" | sed -n 's/.*certificate SHA-1 digest: //p' | head -1)
+          sha256=$(echo "$certs" | sed -n 's/.*certificate SHA-256 digest: //p' | head -1)
+
+          if [ "$IS_RELEASE" = "true" ] && echo "$subject" | grep -q "Android Debug"; then
+            echo "::error::O APK de release foi assinado com a chave de debug."
+            exit 1
+          fi
+
+          (cd dist && sha256sum "$APK" > "$APK.sha256")
+
+          {
+            echo "### APK ${{ steps.version.outputs.name }} (build ${{ steps.version.outputs.build }})"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Assinatura | \`$subject\` |"
+            echo "| SHA-1 | \`$sha1\` |"
+            echo "| SHA-256 | \`$sha256\` |"
+            echo "| Tamanho | $(du -h "dist/$APK" | cut -f1) |"
+            echo ""
+            echo "Cadastre o SHA-1 no Firebase (Configurações do projeto → app Android) para o login com Google funcionar neste APK."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apk
+          path: mobile/dist/
+          retention-days: 14
+          if-no-files-found: error
+
+  release:
+    name: Publicar release
+    needs: build
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: apk
+          path: dist
+
+      - name: Criar release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.build.outputs.tag }}
+          NAME: ${{ needs.build.outputs.name }}
+          BUILD: ${{ needs.build.outputs.build }}
+        run: |
+          notes=$(cat <<EOF
+          ## Como instalar
+
+          1. Baixe o arquivo \`.apk\` abaixo no celular Android.
+          2. Abra o arquivo e permita a instalação de fontes desconhecidas quando o Android pedir.
+          3. Se já tiver uma versão instalada, ela é atualizada mantendo seus dados.
+
+          O login com Google só funciona para contas cadastradas como usuário de teste no projeto.
+          EOF
+          )
+
+          gh release create "$TAG" dist/* \
+            --target "$GITHUB_SHA" \
+            --title "LetterBox Android $NAME (build $BUILD)" \
+            --notes "$notes" \
+            --generate-notes
